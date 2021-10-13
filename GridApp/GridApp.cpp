@@ -3,7 +3,7 @@
 #include "Windows.h"
 #include <commdlg.h>
 #include <cstring>
-#include <string>
+#include <string> 
 #include <fstream>
 #include <vector>
 
@@ -26,6 +26,10 @@ WCHAR szFileName[MAX_LOADSTRING];
 HINSTANCE hInst;
 TABLE table;
 
+HPEN pen;
+HBRUSH brush;;
+RECT padding;
+
 ATOM                MyRegisterClass(HINSTANCE);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -33,11 +37,8 @@ INT_PTR CALLBACK    Edit(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 BOOL				TryGetNumFromEditCtrl(HWND, int, INT*);
 VOID				GetUserFileName(HWND, WCHAR*);
-VOID				LoadTextFromFile(WCHAR*, STRINGVECTOR*);
-VOID				DrawTable(HWND, RECT, HDC);
-INT					TryToPlace(std::string, HWND, HDC, RECT, int);
-VOID				DrawLine(HDC, COLORREF, int, int, int, int);
-VOID				DrawVerticalTableLines(HDC, COLORREF, INT, INT);
+VOID				FromString(TABLE*, std::string);
+VOID				DrawTable(HWND, HDC, RECT, TABLE);
 VOID				Repaint(HWND);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -55,7 +56,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 	if (!InitInstance(hInstance, nCmdShow))
 	{
-		return FALSE;
+		return -1;
 	}
 
 	HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_GRIDAPP));
@@ -103,6 +104,11 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 		return FALSE;
 	}
 
+	pen = CreatePen(PS_INSIDEFRAME, 1, RGB(0, 0, 0));
+	brush = CreateSolidBrush(RGB(255, 255, 255));
+	RECT r{ 5, 5, 5, 5 };
+	padding = r;
+
 	ShowWindow(hWnd, nCmdShow);
 	UpdateWindow(hWnd);
 
@@ -115,8 +121,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_BUILD_TABLE:
 	{
-		table.strings.clear();
-		LoadTextFromFile(szFileName, &table.strings);
+		if (szFileName[0] == '\0') {
+			break;
+		}
+		std::ifstream t(szFileName);
+		std::string string((std::istreambuf_iterator<char>(t)),
+			std::istreambuf_iterator<char>());
+		t.close();
+		FromString(&table, string);
 		Repaint(hWnd);
 	}
 	break;
@@ -151,14 +163,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		PAINTSTRUCT ps;
 		HDC hdc = BeginPaint(hWnd, &ps);
 
-		if (table.cols && table.rows) {
-			RECT wndRect;
-			GetClientRect(hWnd, &wndRect);
+		RECT client;
+		GetClientRect(hWnd, &client);
 
-			DrawTable(hWnd, wndRect, hdc);
-		}
+		DrawTable(hWnd, hdc, client, table);
+
 		EndPaint(hWnd, &ps);
-
 	}
 	break;
 	case WM_DESTROY:
@@ -271,123 +281,78 @@ VOID GetUserFileName(HWND hWnd, WCHAR* szFileName)
 	GetOpenFileName(&ofn);
 	wcscpy_s(szFileName, wcslen(szFile) + 1, szFile);
 }
-VOID LoadTextFromFile(WCHAR* szFileName, STRINGVECTOR* str)
+VOID FromString(TABLE* table, std::string string)
 {
-	std::ifstream t(szFileName);
-	std::string string((std::istreambuf_iterator<char>(t)),
-		std::istreambuf_iterator<char>());
+	table->strings.clear();
+	int len = string.size();
+	if (len == 0)
+		return;
+	if (table->rows < 1 || table->cols < 1)
+		return;
+	int cellsCount = table->rows * table->cols;
+	int stringSizeInCell = len / cellsCount;
 
-	const int num = table.rows * table.cols;
-	const int cellsInRow = string.size() / num;
-
-	for (int i = 0; i < num; i++)
-	{
-		if (i != num - 1)
-		{
-			str->push_back(string.substr(i * cellsInRow, cellsInRow));
-		}
-		else
-		{
-			str->push_back(string.substr(i * cellsInRow, string.size() - (i - 1) * cellsInRow));
-		}
+	int start = 0;
+	int end = stringSizeInCell;
+	while (start < len) {
+		table->strings.push_back(string.substr(start, min(end, len) - start));
+		start = end;
+		end += stringSizeInCell;
 	}
+	while (table->strings.size() < cellsCount)
+		table->strings.push_back("");
 }
 
-INT TryToPlace(std::string str, HWND hWnd, HDC hdc, RECT cellForText, int j) {
-	HFONT oldFont, newFont;
-
-	int indent = 75;
-
-	RECT rect, winRect;
-	GetWindowRect(hWnd, &winRect);
-
-	int height = (winRect.bottom - winRect.top - indent) / table.rows;
-
-	int width = (winRect.right - winRect.left) / table.cols;
-	int weight = width * height / str.length();
-	int charWidth = sqrt(weight / 2);
-	newFont = CreateFont(charWidth * 2, charWidth, 0, 0, 500, 0, 0, 0,
-		DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-		DEFAULT_PITCH | FF_DONTCARE, L"Arial");
-
-	oldFont = (HFONT)SelectObject(hdc, newFont);
-
-
-
-	DrawTextA(hdc, str.c_str(), -1, &cellForText, DT_CALCRECT | DT_WORDBREAK | DT_LEFT | DT_EDITCONTROL);
-	rect.right = winRect.right / table.cols * (j + 1);
-
-	cellForText.bottom = cellForText.top + height;
-
-	DrawTextA(hdc, str.c_str(), -1, &cellForText, DT_WORDBREAK | DT_EDITCONTROL);
-
-	return cellForText.bottom;
-}
-
-VOID DrawTable(HWND hWnd, RECT wndRect, HDC hdc)
+VOID DrawTable(HWND hWnd, HDC hdc, RECT drawBounds, TABLE table)
 {
-	INT indent = 5,
-		maxRowHight = 0,
-		sizeOfColumn;
+	if (table.rows < 1 || table.cols < 1)
+		return;
+	if (table.strings.size() < (table.rows * table.cols))
+		return;
 
-	RECT rect, cellForText;
-	HBRUSH brush;
-	COLORREF colorText = RGB(0, 0, 0),
-		colorBack = RGB(255, 255, 255),
-		colorLine = RGB(0, 0, 0);
-
-	brush = CreateSolidBrush(colorBack);
+	SelectObject(hdc, pen);
 	SelectObject(hdc, brush);
-	Rectangle(hdc, wndRect.left, wndRect.top, wndRect.right, wndRect.bottom);
-	DeleteObject(brush);
 
-	sizeOfColumn = wndRect.right / table.cols;
+	Rectangle(hdc, drawBounds.left, drawBounds.top, drawBounds.right, drawBounds.bottom);
 
-	for (int i = 0; i < table.rows; i++) {
+	int cellWidth = drawBounds.right / table.cols;
+	int cellHeight = drawBounds.bottom / table.rows;
 
-		rect.top = maxRowHight;
+	POINT tmp;
+	int y0 = drawBounds.top;
+	for (int y = 0; y < table.rows; y++) {
+		int maxY = 0;
+		for (int x = 0; x < table.cols; x++) {
+			auto str = table.strings[(y * table.cols) + x];
+			auto text = str.c_str();
 
-		for (int j = 0; j < table.cols; j++) {
+			RECT cellForText;
+			cellForText.left = cellWidth * x + padding.left;
+			cellForText.top = y0 + padding.top;
+			cellForText.right = cellForText.left + cellWidth + padding.right;
+			cellForText.bottom = cellForText.top + 255;
 
-			rect.left = sizeOfColumn * j;
-			rect.right = wndRect.right / table.cols * (j + 1);
+			DrawTextA(hdc, text, -1, &cellForText, DT_CALCRECT | DT_WORDBREAK | DT_LEFT | DT_EDITCONTROL);
 
-			SetBkMode(hdc, TRANSPARENT);
-			SetTextColor(hdc, colorText);
+			int height = (cellForText.bottom - cellForText.top) + padding.bottom;
+			maxY = max(maxY, height);
 
-			cellForText.top = rect.top + indent;
-			cellForText.right = rect.right - indent;
-			cellForText.left = rect.left + indent;
-
-			std::string str = table.strings[table.cols * i + j];
-
-			int rectBottom = TryToPlace(str, hWnd, hdc, cellForText, j);
-			if (rectBottom > maxRowHight)
-				maxRowHight = rectBottom;
+			DrawTextA(hdc, text, -1, &cellForText, DT_LEFT | DT_WORDBREAK | DT_WORD_ELLIPSIS | DT_NOPREFIX);
 		}
 
-		DrawLine(hdc, colorLine, wndRect.left, maxRowHight, wndRect.right, maxRowHight);
+		y0 += maxY;
+		MoveToEx(hdc, drawBounds.left, y0, &tmp);
+		LineTo(hdc, drawBounds.right, y0);
 	}
-
-	DrawVerticalTableLines(hdc, colorLine, sizeOfColumn, maxRowHight);
+	for (int x = 1; x < table.cols; x++) {
+		int x0 = cellWidth * x;
+		MoveToEx(hdc, x0, drawBounds.top, &tmp);
+		LineTo(hdc, x0, y0);
+	}
 
 	SetBkMode(hdc, OPAQUE);
 }
-VOID DrawLine(HDC hdc, COLORREF color, int x1, int y1, int x2, int y2)
-{
-	HPEN pen = CreatePen(PS_INSIDEFRAME, 1, color);
-	POINT pt;
-	SelectObject(hdc, pen);
-	MoveToEx(hdc, x1, y1, &pt);
-	LineTo(hdc, x2, y2);
-	DeleteObject(pen);
-}
-VOID DrawVerticalTableLines(HDC hdc, COLORREF color, INT cellSizeX, INT tableSizeY)
-{
-	for (int i = 1; i < table.cols; i++) {
-		DrawLine(hdc, color, i * cellSizeX, 0, i * cellSizeX, tableSizeY);
-	}
-}
+
 
 VOID Repaint(HWND hWnd)
 {
